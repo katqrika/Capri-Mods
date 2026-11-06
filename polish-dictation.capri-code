@@ -1,0 +1,270 @@
+// capri-mod: 1
+// id: polish-dictation
+// name: Polskie dyktowanie
+// version: 1.0.0
+// description: Powiedz "zacznij dyktować" albo "pisz ...", a Capri wpisze Twoje słowa w aktywnym oknie.
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+using System.Threading;
+using CapriDesktop;
+
+// POLSKIE DYKTOWANIE
+// Tekst trafia do okna, które jest aktywne. Jeśli aktywne jest okno samej Capri (jej pole pisania
+// albo Mainframe), nic nie wpisuje i prosi, żebyś kliknęła tam, gdzie ma pisać.
+
+public class PolishDictation : ICapriMod
+{
+    const uint InputKeyboard = 1;
+    const uint KeyUp = 0x0002;
+    const uint KeyUnicode = 0x0004;
+    const ushort VkReturn = 0x0D;
+    const int Longest = 3000;
+    const int Batch = 40;
+    static readonly TimeSpan Quiet = TimeSpan.FromMinutes(3);
+    static readonly TimeSpan Nag = TimeSpan.FromSeconds(10);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MouseInput { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct KeyInput { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct HardwareInput { public uint uMsg; public ushort wParamL; public ushort wParamH; }
+
+    [StructLayout(LayoutKind.Explicit)]
+    struct InputUnion
+    {
+        [FieldOffset(0)] public MouseInput mi;
+        [FieldOffset(0)] public KeyInput ki;
+        [FieldOffset(0)] public HardwareInput hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct Input { public uint type; public InputUnion u; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint SendInput(uint count, Input[] inputs, int size);
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+
+    static readonly RegexOptions Loose = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+
+    static readonly Regex WakeRx = new Regex(@"^\W*(?:(?:hej|hey|cześć|czesc)\s+)?(?:capri|kapri|kaprii|kapry|capry)\b[\s,.:;!?-]*", Loose);
+
+    static readonly Regex BeginRx = new Regex(@"^(?:zacznij|rozpocznij|włącz|wlacz|uruchom|zaczynaj|zaczynamy)\s+(?:dyktowanie|dyktować|dyktowac|pisanie|pisać|pisac)\b[\s,.:;!?-]*(?<rest>.*)$", Loose | RegexOptions.Singleline);
+
+    static readonly Regex EndRx = new Regex(@"^(?:koniec|stop|zakończ|zakoncz|wyłącz|wylacz|przestań|przestan|skończ|skoncz)\s+(?:dyktowania|dyktowanie|dyktować|dyktowac|pisania|pisanie|pisać|pisac)\b", Loose);
+
+    static readonly Regex OnceRx = new Regex(@"^(?:dyktuję|dyktuje|dyktuj|pisz|napisz|wpisz\s+dosłownie|wpisz\s+doslownie)\b[\s,.:;!?-]+(?<rest>.+)$", Loose | RegexOptions.Singleline);
+
+    static readonly string[][] Spoken = new string[][]
+    {
+        new string[] { @"\s*\bnowy\s+akapit\b\s*", "\n\n" },
+        new string[] { @"\s*\b(?:nowa\s+linia|nowy\s+wiersz|enter)\b\s*", "\n" },
+        new string[] { @"\s*\b(?:znak\s+zapytania|pytajnik)\b", "?" },
+        new string[] { @"\s*\bwykrzyknik\b", "!" },
+        new string[] { @"\s*\bwielokropek\b", "..." },
+        new string[] { @"\s*\bprzecinek\b", "," },
+        new string[] { @"\s*\bkropka\b", "." },
+        new string[] { @"\s*\bdwukropek\b", ":" },
+        new string[] { @"\s*\bśrednik\b", ";" },
+        new string[] { @"\s*\bmyślnik\b\s*", " - " },
+        new string[] { @"\botwórz\s+nawias\b\s*", "(" },
+        new string[] { @"\s*\bzamknij\s+nawias\b", ")" }
+    };
+
+    static readonly Regex[] SpokenRx = BuildSpoken();
+
+    static Regex[] BuildSpoken()
+    {
+        Regex[] built = new Regex[Spoken.Length];
+        for (int i = 0; i < Spoken.Length; i++) built[i] = new Regex(Spoken[i][0], Loose);
+        return built;
+    }
+
+    ICapriHost capri;
+    readonly object gate = new object();
+    readonly Queue<string> pending = new Queue<string>();
+    Thread worker;
+    bool stopping;
+    bool dictating;
+    DateTime lastHeard = DateTime.MinValue;
+    DateTime lastNag = DateTime.MinValue;
+
+    public void Start(ICapriHost host)
+    {
+        capri = host;
+        lock (gate)
+        {
+            stopping = false;
+            dictating = false;
+            pending.Clear();
+        }
+        worker = new Thread(Work);
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    public void Stop()
+    {
+        lock (gate)
+        {
+            stopping = true;
+            dictating = false;
+            pending.Clear();
+            Monitor.PulseAll(gate);
+        }
+    }
+
+    public bool Heard(string words)
+    {
+        string line = (words ?? "").Trim();
+        if (line.Length == 0) return false;
+        string addressed = WakeRx.Replace(line, "").Trim();
+        string bare = Regex.Replace(addressed, @"[\s.,!?;:]+$", "");
+        lock (gate)
+        {
+            if (dictating && DateTime.UtcNow - lastHeard > Quiet) dictating = false;
+            if (EndRx.IsMatch(bare))
+            {
+                dictating = false;
+                capri.Say("Dyktowanie wyłączone.");
+                return true;
+            }
+            Match begin = BeginRx.Match(addressed);
+            if (begin.Success)
+            {
+                dictating = true;
+                lastHeard = DateTime.UtcNow;
+                string rest = begin.Groups["rest"].Value.Trim();
+                if (rest.Length > 0) Enqueue(rest, true);
+                capri.Say("Dyktowanie włączone. Powiedz: koniec dyktowania, gdy skończysz.");
+                return true;
+            }
+            Match once = OnceRx.Match(addressed);
+            if (once.Success)
+            {
+                Enqueue(once.Groups["rest"].Value.Trim(), false);
+                return true;
+            }
+            if (dictating)
+            {
+                lastHeard = DateTime.UtcNow;
+                Enqueue(line, true);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static string Format(string raw)
+    {
+        string text = (raw ?? "").Trim();
+        for (int i = 0; i < SpokenRx.Length; i++) text = SpokenRx[i].Replace(text, Spoken[i][1]);
+        return text.Trim(' ');
+    }
+
+    void Enqueue(string raw, bool continuing)
+    {
+        string text = Format(raw);
+        if (text.Length == 0) return;
+        if (text.Length > Longest) text = text.Substring(0, Longest);
+        if (continuing && !text.EndsWith("\n")) text += " ";
+        lock (gate)
+        {
+            pending.Enqueue(text);
+            Monitor.Pulse(gate);
+        }
+    }
+
+    void Work()
+    {
+        while (true)
+        {
+            string text;
+            lock (gate)
+            {
+                while (pending.Count == 0 && !stopping) Monitor.Wait(gate);
+                if (stopping) return;
+                text = pending.Dequeue();
+            }
+            try { Type(text); }
+            catch (Exception error) { capri.Log("Wpisywanie się nie udało: " + error.Message); }
+        }
+    }
+
+    static bool OwnWindow()
+    {
+        IntPtr window = GetForegroundWindow();
+        if (window == IntPtr.Zero) return true;
+        uint process;
+        GetWindowThreadProcessId(window, out process);
+        return process == (uint)Process.GetCurrentProcess().Id;
+    }
+
+    void Remind(string line)
+    {
+        if (DateTime.UtcNow - lastNag < Nag) return;
+        lastNag = DateTime.UtcNow;
+        capri.Say(line);
+    }
+
+    static Input Key(ushort vk, ushort scan, uint flags)
+    {
+        Input input = new Input();
+        input.type = InputKeyboard;
+        input.u.ki.wVk = vk;
+        input.u.ki.wScan = scan;
+        input.u.ki.dwFlags = flags;
+        return input;
+    }
+
+    bool Send(List<Input> events)
+    {
+        uint sent = SendInput((uint)events.Count, events.ToArray(), Marshal.SizeOf(typeof(Input)));
+        events.Clear();
+        return sent != 0;
+    }
+
+    void Type(string text)
+    {
+        if (OwnWindow())
+        {
+            Remind("Kliknij najpierw tam, gdzie mam pisać.");
+            return;
+        }
+        List<Input> events = new List<Input>();
+        foreach (char c in text)
+        {
+            if (c == '\r') continue;
+            if (c == '\n')
+            {
+                events.Add(Key(VkReturn, 0, 0));
+                events.Add(Key(VkReturn, 0, KeyUp));
+            }
+            else
+            {
+                events.Add(Key(0, c, KeyUnicode));
+                events.Add(Key(0, c, KeyUnicode | KeyUp));
+            }
+            if (events.Count >= Batch)
+            {
+                if (!Send(events))
+                {
+                    Remind("Nie mogę pisać w tym oknie. Może działa jako administrator.");
+                    return;
+                }
+                Thread.Sleep(5);
+            }
+        }
+        if (events.Count > 0 && !Send(events)) Remind("Nie mogę pisać w tym oknie. Może działa jako administrator.");
+    }
+}

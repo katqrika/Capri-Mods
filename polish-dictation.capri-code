@@ -1,58 +1,78 @@
 // capri-mod: 1
 // id: polish-dictation
 // name: Polskie dyktowanie
-// version: 1.2.0
+// version: 1.3.0
+// description: Dyktowanie po polsku, poprawianie głosem, gotowe teksty, skróty klawiszowe, szukanie w sieci i wiadomości do osób (wysyła po Twoim "wyślij").
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using CapriDesktop;
 
-// POLSKIE DYKTOWANIE I POMOCNIK - wersja 1.2.0
+// POLSKIE DYKTOWANIE I POMOCNIK - wersja 1.3.0
+//
+// Jak to działa: Capri oddaje temu modowi każde zdanie, które powiesz, zanim zajmie się nim sama.
+// Jeśli mod rozpozna polecenie, wykonuje je, a Capri nie odpowiada. Jeśli nie, zdanie idzie do rozmowy.
+// Zdania zaczynające się od "napisz do ...", "skasuj ...", "naciśnij ..." mod bierze zawsze, nawet gdy
+// czegoś nie zrozumie, i wtedy mówi, czego brakuje, zamiast przerzucać Cię do rozmowy.
 //
 // 1) PISANIE W AKTYWNYM OKNIE
 //    Jedna wypowiedź:  "napisz cześć, co słychać"  /  "pisz ..."  /  "dyktuj ..."  /  "wpisz dosłownie ..."
+//    Gdy powiesz samo "napisz" i zrobisz pauzę, Capri pyta "Co wpisać?" i wpisze następne zdanie.
+//    Krótkie wpisywane hasła (do 4 słów) dostają bez kropki na końcu, np. "napisz karol wiśniewski".
+//    "Napisz mi ..." / "napisz do mnie ..." to prośba do Capri o ułożenie tekstu, więc nie jest wpisywane.
 //    Tryb dyktowania:  "zacznij dyktować" ... "koniec dyktowania" (sam się wyłącza po 3 minutach ciszy)
 //    Znaki do wypowiedzenia: przecinek, kropka, wielokropek, znak zapytania (pytajnik), wykrzyknik, dwukropek,
 //    średnik, myślnik, otwórz nawias, zamknij nawias, nowa linia, nowy akapit.
 //
-// 2) POPRAWIANIE GŁOSEM (w dyktowaniu i 3 minuty po wpisaniu czegoś)
-//    "skasuj ostatnie słowo", "skasuj zdanie" (ostatnie), "skasuj wszystko" (to, co wpisałam), "cofnij", "ponów",
-//    "zaznacz wszystko". Kasowanie działa tylko w oknie, w którym pisałam, i tylko na tym, co sama wpisałam.
+// 2) POPRAWIANIE GŁOSEM
+//    "skasuj ostatnie słowo" (też: usuń / wykasuj / cofnij, słowo / wyraz / słówko), "skasuj zdanie" (ostatnie),
+//    "skasuj tekst" albo "skasuj wiadomość" (wszystko, co wpisałam), "skasuj to" (ostatni wpisany kawałek),
+//    "cofnij", "ponów", "zaznacz wszystko".
+//    Kasowanie działa tylko w oknie, w którym pisałam, i tylko na tym, co sama wpisałam. Obejmuje też wiadomość
+//    wpisaną do rozmowy, zanim ją wyślesz.
 //
 // 3) GOTOWE TEKSTY
 //    "wstaw powitanie", "wpisz mój podpis", "wpisz mój adres e-mail", "wstaw telefon" ...
 //    Własne teksty dopisz w tabeli Snippets niżej (podpis, e-mail i telefon są tam jako przykład, w komentarzu).
 //
-// 4) SKRÓTY KLAWISZOWE (całe zdanie, np. samo "kopiuj")
-//    kopiuj, wklej, wytnij, zaznacz wszystko, cofnij, ponów, zapisz plik, znajdź na stronie, następna karta,
-//    poprzednia karta, nowa karta, zamknij kartę, odśwież, zrzut fragmentu ekranu, pokaż pulpit, przełącz okno.
+// 4) SKRÓTY KLAWISZOWE
+//    kopiuj (skopiuj to), wklej (wklej tutaj), wytnij, zaznacz wszystko, cofnij, ponów, zapisz plik,
+//    znajdź na stronie, następna karta, poprzednia karta, nowa karta, zamknij kartę, odśwież,
+//    zrzut fragmentu ekranu, pokaż pulpit, przełącz okno. Też "control c" / "control v".
 //    Oraz: "naciśnij enter / escape / tab / spację / backspace / delete / strzałkę w górę (dół, lewo, prawo) /
 //    home / end / page up / page down".
+//    Jednowyrazowe polecenia są dla rozpoznawania mowy najtrudniejsze, więc mod toleruje drobne przekręcenia
+//    ("kopij", "wlej" itp.), ale pewniej działają dwa słowa: "skopiuj to", "wklej tutaj", "wytnij to".
 //
-// 5) SZUKANIE W SIECI (trzeba powiedzieć gdzie, inaczej zajmuje się tym sama Capri)
-//    "wyszukaj w Google przepis na pierogi", "znajdź na YouTube koncert Chopina",
-//    "wyszukaj pizzerię w mapach Google", "znajdź w Wikipedii Warszawa", "wygoogluj pogoda jutro".
+// 5) SZUKANIE W SIECI
+//    "wyszukaj przepis na pierogi" (domyślnie Google), "wyszukaj w Google ...", "znajdź na YouTube ...",
+//    "wyszukaj pizzerię w mapach Google", "znajdź w Wikipedii ...", "wygoogluj / zgoogluj ...".
+//    "Znajdź" i "szukaj" bez nazwy miejsca zostawiam Capri (to mogą być pliki, nie internet).
 //
 // 6) WIADOMOŚĆ DO OSOBY
 //    "Napisz wiadomość do Macieja, że jestem zajęta"   (też: "napisz do Macieja że ...", "wyślij wiadomość do ...")
 //    Z aplikacją:  "napisz do Macieja na Slacku, że ..."  /  "napisz na Telegramie do Kasi, że ...".
 //    Bez nazwy aplikacji używa DefaultApp (domyślnie Discord).
+//    Jeśli zrobisz pauzę ("napisz do Macieja" ... "że jestem zajęta"), Capri zapyta "Co mam napisać?".
 //    "Napisz mu / jej / do niego / do niej, że ..." = do ostatniej osoby, do której pisałam.
-//    Capri przełącza się na aplikację, otwiera rozmowę wyszukiwarką aplikacji, wpisuje tekst i czeka.
-//    Sprawdź na ekranie, czy to właściwa osoba, i powiedz "wyślij" (albo "anuluj", żeby skasować wpisany tekst).
-//    Bez Twojego "wyślij" nic nie jest wysyłane. "Wyślij" działa 2 minuty i tylko gdy okno aplikacji jest nadal na wierzchu.
+//    Capri przełącza się na aplikację, otwiera rozmowę wyszukiwarką aplikacji, wpisuje tekst i pyta "Wysłać?".
+//    Sprawdź na ekranie, czy to właściwa osoba, i powiedz "wyślij" (lub "tak"). "Anuluj" (lub "nie", "skasuj
+//    wiadomość") kasuje wpisany tekst. "Wyślij" działa 2 minuty i tylko gdy okno aplikacji jest nadal na wierzchu.
+//    Gdy sama dodasz na końcu "i wyślij" ("napisz do Macieja, że jestem zajęta, i wyślij"), wyśle od razu.
 //    Obsługiwane: Discord, Slack (Ctrl+K), WhatsApp, Telegram, Teams. Discord i Slack mają wyszukiwarkę pod Ctrl+K,
 //    a skróty w WhatsAppie, Telegramie i Teams to moje najlepsze przypuszczenie (NIESPRAWDZONE).
 //    Messengera na komputer już nie ma, więc go nie obsługuję.
 //
-//    UWAGA: gdy w Capri działa Call mode, jej słyszą też Twoi znajomi z rozmowy. Wyłącz ten mod (Mods > Off),
-//    gdy nie chcesz, żeby ktoś mógł poprosić ją o wpisanie czy wysłanie wiadomości albo otwarcie strony.
+// DZIENNIK: mod zapisuje, co usłyszał i co z tym zrobił (plik heard.log w folderze moda).
+//    Powiedz "pokaż dziennik", żeby go otworzyć. Gdy coś nie działa, wyślij mi kilka ostatnich linii.
+//    Wyłączysz go, zmieniając DebugLog na false.
 //
-//    Imię w dopełniaczu/celowniku ("Macieja", "Piotrowi") jest skracane do tematu ("Maciej", "Piotr").
-//    Gdy to nie trafia (np. "Marka" -> "Marek"), dopisz osobę do tabeli Contacts.
+// UWAGA: gdy w Capri działa Call mode, jej słyszą też Twoi znajomi z rozmowy. Wyłącz ten mod (Mods > Off),
+// gdy nie chcesz, żeby ktoś mógł poprosić ją o wpisanie czy wysłanie wiadomości albo otwarcie strony.
 //
 // Głośność, pauza, następny utwór itp. po polsku Capri ma już sama, więc tego tu nie dublowałam.
 public class PolishDictation : ICapriMod
@@ -68,11 +88,16 @@ public class PolishDictation : ICapriMod
     // true = piszę tylko do osób z tabeli Contacts (bezpieczniej, bo nie zgadnę nie tego Macieja).
     static readonly bool OnlyContacts = false;
 
-    // Ręczne przypisania osób: { "jak to słychać (małymi literami)", "co wpisać w wyszukiwarkę aplikacji" }
+    // true = zapisuje w pliku heard.log, co usłyszała i co zrobiła (ostatnie 300 linii).
+    static readonly bool DebugLog = true;
+
+    // Ręczne przypisania osób: { "jak to słychać, małymi literami (kilka wersji rozdziel kreską |)", "co wpisać w wyszukiwarkę aplikacji" }
+    // Rozpoznawanie mowy potrafi przekręcać obce nazwy, więc wpisz tu różne wersje.
     static readonly string[][] Contacts = new string[][]
     {
-        // new string[] { "marka", "Marek" },
-        // new string[] { "mamie", "Mama" },
+        // new string[] { "marka|marek", "Marek" },
+        // new string[] { "mamie|mamy|mama", "Mama" },
+        // new string[] { "maciek fnatic|maćka fnatic|maćkowi fnatic|maciek fnatik", "Maciek Fnatic" },
     };
 
     // Gotowe teksty: { "nazwa, którą powiesz", "co wpisać" }. \n to nowa linia.
@@ -95,6 +120,7 @@ public class PolishDictation : ICapriMod
     const ushort VkReturn = 0x0D;
     const ushort VkControl = 0x11;
     const ushort VkBack = 0x08;
+    const ushort VkA = 0x41;
     const ushort VkE = 0x45;
     const ushort VkF = 0x46;
     const ushort VkK = 0x4B;
@@ -104,6 +130,8 @@ public class PolishDictation : ICapriMod
     static readonly TimeSpan Quiet = TimeSpan.FromMinutes(3);
     static readonly TimeSpan Nag = TimeSpan.FromSeconds(10);
     static readonly TimeSpan DraftLife = TimeSpan.FromMinutes(2);
+    static readonly TimeSpan AskLife = TimeSpan.FromSeconds(20);
+    static readonly TimeSpan SendMemory = TimeSpan.FromMinutes(10);
 
     [StructLayout(LayoutKind.Sequential)]
     struct MouseInput { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
@@ -148,42 +176,80 @@ public class PolishDictation : ICapriMod
 
     static readonly RegexOptions Loose = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
 
-    static readonly Regex WakeRx = new Regex(@"^\W*(?:(?:hej|hey|cześć|czesc)\s+)?(?:capri|kapri|kaprii|kapry|capry)\b[\s,.:;!?-]*", Loose);
+    // Imię Capri w różnych zapisach, jakie robi rozpoznawanie mowy.
+    const string WakeWords = @"(?:ca?pri|kapri|kaprii|kapry|capry|kapre|capre|kaprę|caprę)";
 
-    static readonly Regex BeginRx = new Regex(@"^(?:zacznij|rozpocznij|włącz|wlacz|uruchom|zaczynaj|zaczynamy)\s+(?:dyktowanie|dyktować|dyktowac|pisanie|pisać|pisac)\b[\s,.:;!?-]*(?<rest>.*)$", Loose | RegexOptions.Singleline);
+    static readonly Regex WakeStartRx = new Regex(@"^\W*(?:(?:hej|hey|cześć|czesc|słuchaj|sluchaj)\s+)?" + WakeWords + @"\b[\s,.:;!?-]*", Loose);
 
-    static readonly Regex EndRx = new Regex(@"^(?:koniec|stop|zakończ|zakoncz|wyłącz|wylacz|przestań|przestan|skończ|skoncz)\s+(?:dyktowania|dyktowanie|dyktować|dyktowac|pisania|pisanie|pisać|pisac)\b", Loose);
+    static readonly Regex WakeEndRx = new Regex(@"[\s,.:;!?-]*(?<![\p{L}])(?:(?:hej|hey)\s+)?" + WakeWords + @"\W*$", Loose);
 
-    static readonly Regex OnceRx = new Regex(@"^(?:dyktuję|dyktuje|dyktuj|napisz|pisz|wpisz\s+dosłownie|wpisz\s+doslownie)\b[\s,.:;!?-]+(?<rest>.+)$", Loose | RegexOptions.Singleline);
+    // "proszę", "możesz", "dobra" itp. na początku polecenia nie mają znaczenia.
+    static readonly Regex FillerRx = new Regex(@"^(?:(?:proszę|prosze|dobra|dobrze|okej|ok|no|a\s+teraz|teraz|możesz|mozesz|czy\s+możesz|czy\s+mozesz|mogłabyś|moglabys|chciałabym\s+żebyś|chcę\s+żebyś)[\s,]+)+", Loose);
 
-    // "napisz (wiadomość) (do) Macieja (na Slacku) (,) że jestem zajęta"
-    static readonly Regex MessageRx = new Regex(@"^(?:napisz|wyślij|wyslij)\s+(?<head>[^.!?,]{2,80}?)[\s,]+(?:że|ze|żeby|zeby)\s+(?<msg>.+)$", Loose | RegexOptions.Singleline);
+    static readonly Regex BeginRx = new Regex(@"^(?:zacznij|rozpocznij|włącz|wlacz|uruchom|zaczynaj|zaczynamy|zaczynam)\s+(?:dyktowanie|dyktować|dyktowac|pisanie|pisać|pisac)\b[\s,.:;!?-]*(?<rest>.*)$", Loose | RegexOptions.Singleline);
+
+    static readonly Regex EndRx = new Regex(@"^(?:to\s+)?(?:koniec|stop|zakończ|zakoncz|wyłącz|wylacz|przestań|przestan|skończ|skoncz|kończę|konczę|skończyłam|skonczylam)\s+(?:dyktowania|dyktowanie|dyktować|dyktowac|pisania|pisanie|pisać|pisac)\b", Loose);
+
+    // Samo "napisz" / "pisz" / "dyktuj": czeka na następne zdanie.
+    static readonly Regex BareWriteRx = new Regex(@"^(?:napisz|napisać|napisac|pisz|dyktuj|dyktować|dyktowac|wpisz|wpisz\s+dosłownie|wpisz\s+doslownie|wpisz\s+tekst)$", Loose);
+
+    static readonly Regex OnceRx = new Regex(@"^(?:dyktuję|dyktuje|dyktuj|napisz|napisać|napisac|pisz|wpisz\s+dosłownie|wpisz\s+doslownie|wpisz\s+tekst)\b[\s,.:;!?-]+(?<rest>.+)$", Loose | RegexOptions.Singleline);
+
+    // "napisz mi ..." / "napisz do mnie ..." to prośba do Capri, nie wpisywanie.
+    static readonly Regex ToMeRx = new Regex(@"^(?:mi|mnie|nam|nas|sobie|do\s+mnie|do\s+nas|dla\s+mnie|dla\s+nas)(?![\p{L}])", Loose);
+
+    static readonly Regex MessageStartRx = new Regex(@"^(?:napisz|napisać|napisac|wyślij|wyslij|wysłać|wyslac)\s+(?<rest>.+)$", Loose | RegexOptions.Singleline);
+
+    // Co po "napisz" sugeruje wiadomość do osoby (a nie tekst do wpisania).
+    static readonly Regex LooksLikeMessageRx = new Regex(@"^(?:wiadomość|wiadomosc|wiadomości|sms\w*|mesydż\w*|do(?![\p{L}])|mu(?![\p{L}])|jej(?![\p{L}])|im(?![\p{L}])|niego(?![\p{L}])|niej(?![\p{L}])|na\s+(?:discord|slack|whats|telegram|teams|messeng|facebook|insta))", Loose);
+
+    // Początek treści: "że", "żeby", dwukropek, "o treści".
+    static readonly Regex SeparatorRx = new Regex(@"(?:[\s,]+(?:że|ze|żeby|zeby|iż|aby)(?=[\s,]|$)|[\s,]*[:–—]\s*|[\s,]+(?:o\s+treści|z\s+treścią|treść|tresc)(?=[\s,:]|$)[\s,:]*)", Loose);
 
     static readonly Regex AppRx = new Regex(@"(?<![\p{L}])(?:na|w)\s+(?<app>(?:discord|slack|whats|telegram|teams)[\p{L}'’]*)", Loose);
 
     static readonly Regex UnsupportedRx = new Regex(@"(?<![\p{L}])(?:na|w)\s+(?:messeng|facebook|insta|fejs)[\p{L}'’]*", Loose);
 
-    static readonly Regex SendRx = new Regex(@"^(?:tak[\s,]+)?(?:wyślij|wyslij|wysyłaj|wysylaj)(?:\s+(?:to|ją|ja|wiadomość|wiadomosc))?\W*$", Loose);
+    static readonly Regex FillWordsRx = new Regex(@"(?<![\p{L}])(?:wiadomość|wiadomosc|wiadomości|sms\w*|mesydż\w*|do|dla)(?![\p{L}])", Loose);
 
-    static readonly Regex CancelRx = new Regex(@"^(?:anuluj|nie\s+wysyłaj|nie\s+wysylaj|skasuj\s+(?:to|wiadomość|wiadomosc)|usuń\s+(?:to|wiadomość|wiadomosc)|usun\s+(?:to|wiadomosc))\W*$", Loose);
+    static readonly Regex SendNowRx = new Regex(@"[\s,]+(?:i|a\s+potem|a\s+następnie|następnie|potem)\s+(?:od\s+razu\s+)?(?:wyślij|wyslij|wyślesz)(?:\s+(?:to|ją|ja|wiadomość|wiadomosc))?\W*$", Loose);
 
-    static readonly Regex EraseRx = new Regex(@"^(?:skasuj|usuń|usun|wymaż|wymaz|cofnij)\s+(?:ostatnie\s+|ostatni\s+)?(?:(?<w>słowo|slowo)|(?<s>zdanie)|(?<a>wszystko|całość|calosc))$", Loose);
+    static readonly Regex SendRx = new Regex(@"^(?:(?:tak|dobrze|okej|ok|no|śmiało|smialo|dawaj|jasne)[\s,]+)*(?:wyślij|wyslij|wysłać|wyslac|wysyłaj|wysylaj|zatwierdź|zatwierdz|potwierdzam|send)(?:\s+(?:to|ją|ja|tę|te|tą|wiadomość|wiadomosc|już|juz|teraz|proszę|prosze))*$|^(?:tak|jasne|dawaj|śmiało|smialo|zgoda|potwierdzam|okej|ok)$", Loose);
+
+    static readonly Regex JustSendRx = new Regex(@"^(?:wyślij|wyslij|wysłać|wyslac)$", Loose);
+
+    static readonly Regex CancelRx = new Regex(@"^(?:anuluj|odwołaj|odwolaj|przerwij|nieważne|niewazne|nie|nie\s+wysyłaj|nie\s+wysylaj|nie\s+wysyłać|(?:skasuj|usuń|usun|wykasuj|wyrzuć|wyrzuc|kasuj)(?:\s+(?:to|tę|te|tą|ta|całą|cala|cały|caly))?(?:\s+(?:wiadomość|wiadomosc|tekst))?)$", Loose);
+
+    // Anulowanie czekania na ciąg dalszy.
+    static readonly Regex NeverMindRx = new Regex(@"^(?:anuluj|nieważne|niewazne|nic|zapomnij|odwołaj|odwolaj|nie\s+trzeba|przerwij)$", Loose);
+
+    // skasuj/usuń/cofnij + (to/ostatnie) + słowo | zdanie | tekst/wiadomość | to
+    static readonly Regex EraseRx = new Regex(@"^(?:skasuj|skasować|skasowac|kasuj|usuń|usun|usunąć|usunac|wykasuj|wymaż|wymaz|wyrzuć|wyrzuc|cofnij|cofnąć|cofnac)\s+(?:to\s+|te\s+|tę\s+|ten\s+|tą\s+)?(?:ostatnie\s+|ostatni\s+|ostatnią\s+|ostatniego\s+|ostatnio\s+(?:napisane\s+|wpisane\s+)?)?(?:(?<w>słowo|slowo|słowa|slowa|słówko|slowko|słówka|wyraz|wyrazy|wyrazu)|(?<s>zdanie|zdania|linijkę|linijke|linię|linie|linijki)|(?<m>wiadomość|wiadomosc|wiadomości|tekst|tekstu)|(?<t>to|ostatnie|ostatnią\s+rzecz|ostatnia\s+rzecz|wszystko|całość|calosc))(?:\s+(?:które|ktore|co|jakie)\s+(?:przed\s+chwilą\s+|przed\s+chwila\s+)?(?:napisałaś|wpisałaś|napisałeś|napisalas|wpisalas))?(?:\s+proszę|\s+prosze)?$", Loose);
+
+    static readonly Regex BareEraseRx = new Regex(@"^(?:skasuj|kasuj|usuń|usun|wykasuj)$", Loose);
 
     static readonly Regex SnippetRx = new Regex(@"^(?:wstaw|wpisz|dodaj)\s+(?:(?<mine>mój|moj|moja|moje|swój|swoj|swoją|swoje)\s+)?(?<name>[\p{L}\s.@-]{2,40})$", Loose);
 
     static readonly Regex PressRx = new Regex(@"^(?:naciśnij|wciśnij|nacisnij|wcisnij)\s+(?<key>.+)$", Loose);
 
-    const string SiteWords = @"w\s+google(?:u|ach)?|w\s+internecie|w\s+wyszukiwarce|na\s+youtube(?:ie)?|w\s+youtube(?:ie)?|w\s+mapach(?:\s+google)?|na\s+mapach(?:\s+google)?|w\s+wikipedii";
+    static readonly Regex PressCtrlRx = new Regex(@"^(?:(?:naciśnij|wciśnij|nacisnij|wcisnij)\s+)?(?:control|ctrl|kontrol|kontrolka)\s+(?<k>[a-z])$", Loose);
 
-    static readonly Regex SearchAhead = new Regex(@"^(?:wyszukaj|znajdź|znajdz|szukaj)\s+(?<site>" + SiteWords + @")\s+(?<q>.+)$", Loose);
+    static readonly Regex LogRx = new Regex(@"^(?:pokaż|pokaz|otwórz|otworz)\s+(?:dziennik|log)(?:\s+(?:dyktowania|słyszenia|slyszenia|moda))?$", Loose);
 
-    static readonly Regex SearchBehind = new Regex(@"^(?:wyszukaj|znajdź|znajdz|szukaj)\s+(?<q>.+?)\s+(?<site>" + SiteWords + @")\W*$", Loose);
+    const string SiteWords = @"w\s+googl[eu](?:['’]?u|ach)?|w\s+googlach|w\s+internecie|w\s+necie|w\s+sieci|w\s+wyszukiwarce|na\s+youtube(?:ie)?|w\s+youtube(?:ie)?|na\s+yt|w\s+mapach(?:\s+google)?|na\s+mapach(?:\s+google)?|w\s+wikipedii|na\s+wikipedii";
 
-    static readonly Regex Googled = new Regex(@"^wygoogluj\s+(?<q>.+)$", Loose);
+    const string SearchVerbs = @"(?:wyszukaj|wyszukać|wyszukac|znajdź|znajdz|znaleźć|znalezc|szukaj|szukać|szukac|poszukaj|sprawdź|sprawdz|wygoogluj|zgoogluj|googluj)";
 
-    // Słowa po "napisz", które nie są imieniem: "napisz mi, że..." nie ma być wiadomością do kogoś.
-    static readonly string[] NotNames = { "mi", "nam", "sobie", "tu", "tutaj", "tam", "wiadomość", "wiadomosc", "sms", "smsa", "to", "tak", "nie" };
-    // "napisz mu, że..." = do ostatniej osoby. "im" jest za mało jednoznaczne, więc pytam.
+    static readonly Regex SearchAhead = new Regex(@"^" + SearchVerbs + @"\s+(?:mi\s+|dla\s+mnie\s+)?(?<site>" + SiteWords + @")\s+(?:(?:informacje|info)\s+(?:o|na\s+temat)\s+|na\s+temat\s+)?(?<q>.+)$", Loose);
+
+    static readonly Regex SearchBehind = new Regex(@"^" + SearchVerbs + @"\s+(?:mi\s+|dla\s+mnie\s+)?(?<q>.+?)\s+(?<site>" + SiteWords + @")\W*$", Loose);
+
+    // "wyszukaj X" bez nazwy miejsca = Google. "Znajdź" i "szukaj" bez miejsca zostają dla Capri (mogą być o plikach).
+    static readonly Regex SearchPlain = new Regex(@"^(?:wyszukaj|wyszukać|wyszukac|poszukaj|wygoogluj|zgoogluj|googluj)\s+(?:mi\s+|dla\s+mnie\s+)?(?:w\s+(?:sieci|necie|internecie)\s+)?(?:(?:informacje|info)\s+(?:o|na\s+temat)\s+|na\s+temat\s+)?(?<q>.+)$", Loose);
+
+    // Słowa po "napisz do", które nie są imieniem.
+    static readonly string[] NotNames = { "mi", "nam", "sobie", "tu", "tutaj", "tam", "to", "tak", "nie", "tego", "tej", "tych" };
+    // "napisz mu, że..." = do ostatniej osoby. "im" jest zbyt mało jednoznaczne, więc pytam.
     static readonly string[] Pronouns = { "mu", "jej", "im", "go", "ją", "ja", "niego", "niej" };
 
     static readonly string[] Endings = { "owi", "iem", "ego", "emu", "em", "ym", "im", "ą", "ę", "a", "u", "y", "i", "e" };
@@ -251,12 +317,12 @@ public class PolishDictation : ICapriMod
     static List<Shortcut> BuildShortcuts()
     {
         List<Shortcut> l = new List<Shortcut>();
-        Add(l, @"(?:s)?kopiuj(?:\s+to)?", "c", 0x43, false);
-        Add(l, @"wklej(?:\s+(?:to|tutaj|tu))?", "c", 0x56, false);
-        Add(l, @"wytnij(?:\s+to)?", "c", 0x58, false);
-        Add(l, @"zaznacz\s+(?:wszystko|całość|calosc)", "c", 0x41, true);
-        Add(l, @"cofnij(?:\s+to)?", "c", 0x5A, true);
-        Add(l, @"ponów|ponow|przywróć|przywroc", "c", 0x59, true);
+        Add(l, @"(?:s?kopiuj|s?kopiować|s?kopiowac)(?:\s+(?:to|tekst|zaznaczone|zaznaczony(?:\s+tekst)?|zaznaczenie|do\s+schowka))?", "c", 0x43, false);
+        Add(l, @"(?:wklej|wkleić|wklejaj|wkleic)(?:\s+(?:to|tutaj|tu|tekst|ze\s+schowka(?:\s+tutaj)?|zawartość\s+schowka))?", "c", 0x56, false);
+        Add(l, @"(?:wytnij|wyciąć|wyciac)(?:\s+(?:to|tekst|zaznaczone|zaznaczony(?:\s+tekst)?))?", "c", 0x58, false);
+        Add(l, @"zaznacz(?:yć|yc)?\s+(?:wszystko|całość|calosc|cały\s+tekst|caly\s+tekst)", "c", 0x41, true);
+        Add(l, @"(?:cofnij|cofnąć|cofnac)(?:\s+(?:to|ostatnią\s+zmianę|ostatnia\s+zmiane|zmianę|zmiane))?", "c", 0x5A, true);
+        Add(l, @"(?:ponów|ponow|ponowić|ponowic|przywróć|przywroc)(?:\s+(?:to|zmianę|zmiane))?", "c", 0x59, true);
         Add(l, @"zapisz\s+(?:plik|dokument|zmiany)", "c", 0x53, false);
         Add(l, @"(?:znajdź|znajdz|szukaj)\s+na\s+stronie", "c", 0x46, false);
         Add(l, @"nast[ęe]pna\s+kart[aęy]", "c", 0x09, false);
@@ -268,6 +334,50 @@ public class PolishDictation : ICapriMod
         Add(l, @"poka[żz]\s+pulpit", "w", 0x44, false);
         Add(l, @"prze[łl][ąa]cz\s+okno", "a", 0x09, false);
         return l;
+    }
+
+    static Shortcut FindShortcut(string text, bool editOnly)
+    {
+        foreach (Shortcut shortcut in Shortcuts)
+            if ((!editOnly || shortcut.Edit) && shortcut.Rx.IsMatch(text)) return shortcut;
+        return null;
+    }
+
+    // Pojedyncze słowo-polecenie z drobnym przekręceniem ("kopij", "wlej") zamieniam na właściwe.
+    static readonly string[] FuzzyWords = { "kopiuj", "wklej", "wytnij", "cofnij", "ponów", "odśwież" };
+
+    static int Distance(string a, string b)
+    {
+        int[,] d = new int[a.Length + 1, b.Length + 1];
+        for (int i = 0; i <= a.Length; i++) d[i, 0] = i;
+        for (int j = 0; j <= b.Length; j++) d[0, j] = j;
+        for (int i = 1; i <= a.Length; i++)
+        {
+            for (int j = 1; j <= b.Length; j++)
+            {
+                int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
+            }
+        }
+        return d[a.Length, b.Length];
+    }
+
+    static string Fuzzy(string word)
+    {
+        string w = (word ?? "").Trim().ToLowerInvariant();
+        if (w.Length < 4 || w.IndexOf(' ') >= 0) return null;
+        string best = null;
+        int bestDistance = 99;
+        bool tie = false;
+        foreach (string candidate in FuzzyWords)
+        {
+            int limit = candidate.Length >= 7 ? 2 : 1;
+            int d = Distance(w, candidate);
+            if (d > limit) continue;
+            if (d < bestDistance) { best = candidate; bestDistance = d; tie = false; }
+            else if (d == bestDistance && candidate != best) tie = true;
+        }
+        return tie ? null : best;
     }
 
     static readonly Dictionary<string, ushort> KeyNames = BuildKeyNames();
@@ -335,18 +445,36 @@ public class PolishDictation : ICapriMod
     sealed class Job
     {
         // "type" - wpisz tekst, "message" - wiadomość do osoby, "send" / "cancel" - wyślij / skasuj wpisaną wiadomość,
-        // "erase" - skasuj to, co wpisałam (Text: word, sentence, all), "combo" - skrót klawiszowy, "open" - otwórz adres
+        // "erase" - skasuj to, co wpisałam (Text: word, sentence, all, chunk), "combo" - skrót klawiszowy,
+        // "open" - otwórz adres, "log" - pokaż dziennik
         public string Kind;
         public string Text;
         public string Who;
         public string Shown;
         public AppInfo App;
+        public bool SendNow;
         public ushort[] Mods;
         public ushort KeyCode;
     }
 
+    // Rozpoznana wiadomość do osoby.
+    sealed class MessageSpec
+    {
+        public string Spoken;
+        public string Shown;
+        public bool Pronoun;
+        public string PronounWord;
+        public AppInfo App;
+        public string Msg = "";
+        public bool SendNow;
+        public bool Unsupported;
+        public bool NoWho;
+        public bool Unclear;
+    }
+
     ICapriHost capri;
     readonly object gate = new object();
+    readonly object logGate = new object();
     readonly Queue<Job> pending = new Queue<Job>();
     Thread worker;
     bool stopping;
@@ -356,10 +484,23 @@ public class PolishDictation : ICapriMod
     DateTime lastHeard = DateTime.MinValue;
     DateTime lastNag = DateTime.MinValue;
     DateTime lastTyped = DateTime.MinValue;
+    DateTime lastMessageAt = DateTime.MinValue;
     string tail = "";
+    int lastChunk;
     IntPtr tailWindow = IntPtr.Zero;
     string lastWho;
     string lastShown;
+    int messagesInFlight;
+    // Czekam na ciąg dalszy po przerwanym zdaniu: null, "text" (tekst do wpisania), "body" (treść wiadomości), "who" (do kogo)
+    string awaiting;
+    DateTime awaitUntil = DateTime.MinValue;
+    string awaitWho;
+    string awaitShown;
+    string awaitMsg;
+    bool awaitSend;
+    AppInfo awaitApp;
+    string why = "";
+    int logWrites;
 
     public void Start(ICapriHost host)
     {
@@ -370,11 +511,15 @@ public class PolishDictation : ICapriMod
             dictating = false;
             draft = IntPtr.Zero;
             tail = "";
+            lastChunk = 0;
+            awaiting = null;
+            messagesInFlight = 0;
             pending.Clear();
         }
         worker = new Thread(Work);
         worker.IsBackground = true;
         worker.Start();
+        Note("mod uruchomiony");
     }
 
     public void Stop()
@@ -384,6 +529,7 @@ public class PolishDictation : ICapriMod
             stopping = true;
             dictating = false;
             draft = IntPtr.Zero;
+            awaiting = null;
             pending.Clear();
             Monitor.PulseAll(gate);
         }
@@ -391,60 +537,125 @@ public class PolishDictation : ICapriMod
 
     public bool Heard(string words)
     {
+        bool taken;
+        try { taken = Decide(words); }
+        catch (Exception error)
+        {
+            why = "błąd: " + error.Message;
+            taken = false;
+        }
+        Note((taken ? "BIORĘ  (" : "oddaję  (") + why + ")  <-  " + words);
+        return taken;
+    }
+
+    bool Yes(string reason)
+    {
+        why = reason;
+        return true;
+    }
+
+    bool Decide(string words)
+    {
         string line = (words ?? "").Trim();
-        if (line.Length == 0) return false;
-        string addressed = WakeRx.Replace(line, "").Trim();
-        string bare = Regex.Replace(addressed, @"[\s.,!?;:]+$", "");
+        if (line.Length == 0)
+        {
+            why = "pusto";
+            return false;
+        }
+        string addressed = WakeStartRx.Replace(line, "").Trim();
         lock (gate)
         {
             DateTime now = DateTime.UtcNow;
             if (dictating && now - lastHeard > Quiet) dictating = false;
             if (draft != IntPtr.Zero && now - draftAt > DraftLife) draft = IntPtr.Zero;
-
-            if (draft != IntPtr.Zero)
+            if (awaiting != null && now > awaitUntil) awaiting = null;
+            if (!dictating)
             {
-                if (SendRx.IsMatch(bare)) { Queue(new Job { Kind = "send" }); return true; }
-                if (CancelRx.IsMatch(bare)) { Queue(new Job { Kind = "cancel" }); return true; }
+                string noName = WakeEndRx.Replace(addressed, "").Trim();
+                if (noName.Length > 0) addressed = noName;
+            }
+            string command = FillerRx.Replace(addressed, "").Trim();
+            if (command.Length == 0) command = addressed;
+            string bare = Regex.Replace(command, @"[\s.,!?;:]+$", "");
+
+            // Wiadomość czeka na Twoje "wyślij" albo "anuluj" (też gdy jeszcze jest wpisywana).
+            if (draft != IntPtr.Zero || messagesInFlight > 0)
+            {
+                if (SendRx.IsMatch(bare)) { Queue(new Job { Kind = "send" }); return Yes("wyślij wpisaną wiadomość"); }
+                if (CancelRx.IsMatch(bare)) { Queue(new Job { Kind = "cancel" }); return Yes("anuluj wpisaną wiadomość"); }
+            }
+            else if (JustSendRx.IsMatch(bare) && now - lastMessageAt < SendMemory)
+            {
+                capri.Say("Nie mam wpisanej wiadomości. Powiedz jeszcze raz: napisz do, imię, że, treść.");
+                return Yes("wyślij bez wiadomości");
             }
             if (EndRx.IsMatch(bare))
             {
                 dictating = false;
                 capri.Say("Dyktowanie wyłączone.");
-                return true;
+                return Yes("koniec dyktowania");
             }
-            Match begin = BeginRx.Match(addressed);
+            Match begin = BeginRx.Match(command);
             if (begin.Success)
             {
                 dictating = true;
+                awaiting = null;
                 lastHeard = now;
                 string rest = begin.Groups["rest"].Value.Trim();
                 if (rest.Length > 0) Enqueue(rest, true);
                 capri.Say("Dyktowanie włączone. Powiedz: koniec dyktowania, gdy skończysz.");
-                return true;
+                return Yes("początek dyktowania");
             }
+            if (awaiting != null && !dictating && Continue(command, bare, addressed, now)) return true;
+
+            bool recent = dictating || now - lastTyped < Quiet || draft != IntPtr.Zero;
             Match erase = EraseRx.Match(bare);
-            if (erase.Success && (dictating || now - lastTyped < Quiet))
+            if (erase.Success)
+            {
+                bool strong = !erase.Groups["t"].Success;
+                if (strong || recent)
+                {
+                    if (dictating) lastHeard = now;
+                    string what = erase.Groups["w"].Success ? "word" : erase.Groups["s"].Success ? "sentence" : erase.Groups["m"].Success ? "all" : "chunk";
+                    Queue(new Job { Kind = "erase", Text = what });
+                    return Yes("kasowanie: " + what);
+                }
+            }
+            else if (recent && BareEraseRx.IsMatch(bare))
             {
                 if (dictating) lastHeard = now;
-                Queue(new Job { Kind = "erase", Text = erase.Groups["w"].Success ? "word" : erase.Groups["s"].Success ? "sentence" : "all" });
-                return true;
+                Queue(new Job { Kind = "erase", Text = "chunk" });
+                return Yes("kasowanie: ostatni kawałek");
             }
             if (dictating)
             {
                 lastHeard = now;
-                foreach (Shortcut shortcut in Shortcuts)
+                Shortcut edit = FindShortcut(bare, true);
+                if (edit != null)
                 {
-                    if (shortcut.Edit && shortcut.Rx.IsMatch(bare))
-                    {
-                        Queue(new Job { Kind = "combo", Mods = shortcut.Mods, KeyCode = shortcut.KeyCode });
-                        return true;
-                    }
+                    Queue(new Job { Kind = "combo", Mods = edit.Mods, KeyCode = edit.KeyCode });
+                    return Yes("skrót w dyktowaniu");
                 }
-                Enqueue(line, true);
-                return true;
+                Enqueue(addressed, true);
+                return Yes("dyktowanie");
             }
-            Match message = MessageRx.Match(addressed);
-            if (message.Success && TryMessage(message)) return true;
+
+            // "napisz mi ..." to prośba do Capri, nie do mnie.
+            bool toMe = false;
+            Match start = MessageStartRx.Match(command);
+            if (start.Success)
+            {
+                string after = start.Groups["rest"].Value.Trim();
+                if (ToMeRx.IsMatch(after)) toMe = true;
+                else if (LooksLikeMessageRx.IsMatch(after)) return HandleMessage(ParseMessage(after), now);
+            }
+            if (BareWriteRx.IsMatch(bare))
+            {
+                awaiting = "text";
+                awaitUntil = now + AskLife;
+                capri.Say("Co wpisać?");
+                return Yes("czekam na tekst do wpisania");
+            }
             if (TrySearch(bare)) return true;
             Match snippet = SnippetRx.Match(bare);
             if (snippet.Success)
@@ -454,91 +665,229 @@ public class PolishDictation : ICapriMod
                 if (found != null)
                 {
                     Queue(new Job { Kind = "type", Text = found });
-                    return true;
+                    return Yes("gotowy tekst: " + name.Trim());
                 }
                 if (snippet.Groups["mine"].Success)
                 {
                     capri.Say("Nie mam zapisanego tekstu: " + name.Trim() + ". Dopisz go w pliku moda, w tabeli Snippets.");
-                    return true;
+                    return Yes("nieznany gotowy tekst: " + name.Trim());
                 }
             }
-            foreach (Shortcut shortcut in Shortcuts)
+            Shortcut shortcut = FindShortcut(bare, false);
+            if (shortcut == null)
             {
-                if (shortcut.Rx.IsMatch(bare))
-                {
-                    Queue(new Job { Kind = "combo", Mods = shortcut.Mods, KeyCode = shortcut.KeyCode });
-                    return true;
-                }
+                string fixedWord = Fuzzy(bare);
+                if (fixedWord != null) shortcut = FindShortcut(fixedWord, false);
+            }
+            if (shortcut != null)
+            {
+                Queue(new Job { Kind = "combo", Mods = shortcut.Mods, KeyCode = shortcut.KeyCode });
+                return Yes("skrót klawiszowy");
+            }
+            Match ctrl = PressCtrlRx.Match(bare);
+            if (ctrl.Success)
+            {
+                char letter = char.ToUpperInvariant(ctrl.Groups["k"].Value[0]);
+                Queue(new Job { Kind = "combo", Mods = new ushort[] { VkControl }, KeyCode = (ushort)letter });
+                return Yes("Ctrl + " + letter);
             }
             Match press = PressRx.Match(bare);
             if (press.Success)
             {
                 ushort code;
-                if (KeyNames.TryGetValue(press.Groups["key"].Value.Trim().ToLowerInvariant(), out code))
+                string keyName = press.Groups["key"].Value.Trim().ToLowerInvariant();
+                if (KeyNames.TryGetValue(keyName, out code))
                 {
                     Queue(new Job { Kind = "combo", Mods = new ushort[0], KeyCode = code });
-                    return true;
+                    return Yes("klawisz: " + keyName);
                 }
+                capri.Say("Nie znam klawisza: " + keyName + ".");
+                return Yes("nieznany klawisz: " + keyName);
             }
-            Match once = OnceRx.Match(addressed);
-            if (once.Success)
+            if (LogRx.IsMatch(bare))
             {
-                Enqueue(once.Groups["rest"].Value.Trim(), false);
-                return true;
+                Queue(new Job { Kind = "log" });
+                return Yes("pokaż dziennik");
             }
+            Match once = OnceRx.Match(command);
+            if (once.Success && !toMe && !ToMeRx.IsMatch(once.Groups["rest"].Value.Trim()))
+            {
+                TypeOnce(once.Groups["rest"].Value.Trim());
+                return Yes("wpisz jednorazowo");
+            }
+            why = toMe ? "prośba do Capri (napisz mi...)" : "brak dopasowania";
+            return false;
         }
-        return false;
     }
 
-    bool TryMessage(Match message)
+    // Ciąg dalszy po przerwanym zdaniu: "napisz" ... pauza ... "karol wiśniewski".
+    bool Continue(string command, string bare, string addressed, DateTime now)
     {
-        string head = message.Groups["head"].Value;
-        if (UnsupportedRx.IsMatch(head))
+        if (NeverMindRx.IsMatch(bare))
         {
-            capri.Say("Tej aplikacji nie obsługuję. Mam: Discord, Slack, WhatsApp, Telegram i Teams.");
-            return true;
+            awaiting = null;
+            capri.Say("Dobrze, nic nie piszę.");
+            return Yes("anulowane czekanie");
         }
-        AppInfo app = AppFor(null);
-        Match appMatch = AppRx.Match(head);
-        if (appMatch.Success)
+        string kind = awaiting;
+        awaiting = null;
+        if (kind == "text")
         {
-            app = AppFor(appMatch.Groups["app"].Value);
-            head = head.Remove(appMatch.Index, appMatch.Length);
+            TypeOnce(addressed);
+            return Yes("tekst po pauzie");
         }
-        head = Regex.Replace(head, @"(?<![\p{L}])(?:wiadomość|wiadomosc|sms|smsa|mesydż|mesydza|do)(?![\p{L}])", " ", Loose);
-        string[] words = head.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length == 0 || words.Length > 2) return false;
-        string first = words[0].ToLowerInvariant();
-        if (words.Length == 1 && Array.IndexOf(NotNames, first) >= 0) return false;
-        string who, shown;
-        if (words.Length == 1 && Array.IndexOf(Pronouns, first) >= 0)
+        if (kind == "body")
         {
-            if (lastWho == null || first == "im")
+            string text = Compose(Regex.Replace(command, @"^(?:że|ze|żeby|zeby|iż|aby)[\s,]+", "", Loose));
+            if (text.Length == 0)
             {
-                capri.Say("Do kogo mam napisać? Powiedz imię.");
-                return true;
+                capri.Say("Nie usłyszałam treści.");
+                return Yes("pusta treść po pauzie");
             }
-            who = lastWho;
-            shown = lastShown;
+            bool sendNow = awaitSend;
+            Match sendNowMatch = SendNowRx.Match(" " + text);
+            if (sendNowMatch.Success)
+            {
+                text = Compose(text.Substring(0, Math.Max(0, sendNowMatch.Index - 1)));
+                sendNow = true;
+            }
+            QueueMessage(awaitWho, awaitShown, awaitApp, text, sendNow, now);
+            return Yes("treść wiadomości po pauzie");
         }
+        // kind == "who": czekałam na imię
+        MessageSpec spec = ParseMessage(command);
+        if (spec.NoWho || spec.Unclear || spec.Unsupported)
+        {
+            capri.Say(spec.Unsupported ? "Tej aplikacji nie obsługuję." : "Nie usłyszałam imienia. Powiedz: napisz do Macieja, że ...");
+            return Yes("brak imienia po pauzie");
+        }
+        if (spec.Msg.Length == 0 && awaitMsg != null) spec.Msg = awaitMsg;
+        if (spec.App == null) spec.App = awaitApp;
+        if (awaitSend) spec.SendNow = true;
+        return HandleMessage(spec, now);
+    }
+
+    // Rozbiera "(do) Macieja (na Slacku) że treść" na osobę, aplikację i treść. Czasownik ("napisz") jest już zdjęty.
+    static MessageSpec ParseMessage(string rest)
+    {
+        MessageSpec spec = new MessageSpec();
+        string padded = " " + (rest ?? "").Trim();
+        string head = padded;
+        string msg = "";
+        Match sep = SeparatorRx.Match(padded);
+        if (sep.Success)
+        {
+            head = padded.Substring(0, sep.Index);
+            msg = padded.Substring(sep.Index + sep.Length);
+        }
+        if (UnsupportedRx.IsMatch(head)) spec.Unsupported = true;
+        Match app = AppRx.Match(head);
+        if (app.Success)
+        {
+            spec.App = AppFor(app.Groups["app"].Value);
+            head = head.Remove(app.Index, app.Length);
+        }
+        head = FillWordsRx.Replace(head, " ");
+        string[] words = head.Split(new char[] { ' ', ',', ':', ';', '.', '!', '?', '„', '”', '"' }, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0) spec.NoWho = true;
+        else if (words.Length > 3) spec.Unclear = true;
         else
         {
-            string spoken = string.Join(" ", words);
-            who = Search(spoken);
-            shown = string.Join(" ", Array.ConvertAll(words, new Converter<string, string>(Capital)));
+            string first = words[0].ToLowerInvariant();
+            if (words.Length == 1 && Array.IndexOf(Pronouns, first) >= 0)
+            {
+                spec.Pronoun = true;
+                spec.PronounWord = first;
+            }
+            else if (words.Length == 1 && Array.IndexOf(NotNames, first) >= 0) spec.Unclear = true;
+            else
+            {
+                spec.Spoken = string.Join(" ", words);
+                spec.Shown = string.Join(" ", Array.ConvertAll(words, new Converter<string, string>(Capital)));
+            }
+        }
+        msg = msg.Trim();
+        Match sendNow = SendNowRx.Match(" " + msg);
+        if (sendNow.Success)
+        {
+            spec.SendNow = true;
+            msg = msg.Substring(0, Math.Max(0, sendNow.Index - 1)).Trim();
+        }
+        spec.Msg = msg;
+        return spec;
+    }
+
+    bool HandleMessage(MessageSpec spec, DateTime now)
+    {
+        if (spec.Unsupported)
+        {
+            capri.Say("Tej aplikacji nie obsługuję. Mam: Discord, Slack, WhatsApp, Telegram i Teams.");
+            return Yes("nieobsługiwana aplikacja");
+        }
+        if (spec.Unclear)
+        {
+            capri.Say("Nie zrozumiałam, do kogo. Powiedz: napisz do Macieja, że i treść.");
+            return Yes("nie zrozumiałam adresata");
+        }
+        string who = null, shown = null;
+        if (spec.Pronoun)
+        {
+            if (lastWho != null && spec.PronounWord != "im")
+            {
+                who = lastWho;
+                shown = lastShown;
+            }
+        }
+        else if (spec.Spoken != null)
+        {
+            who = Search(spec.Spoken);
+            shown = spec.Shown;
             if (who == null)
             {
                 capri.Say("Nie mam " + shown + " na liście osób w modzie. Dopisz ją w tabeli Contacts.");
-                return true;
+                return Yes("osoba spoza listy: " + shown);
             }
         }
-        string text = Compose(message.Groups["msg"].Value);
-        if (text.Length == 0) return false;
+        if (who == null)
+        {
+            awaiting = "who";
+            awaitUntil = now + AskLife;
+            awaitApp = spec.App;
+            awaitMsg = spec.Msg.Length > 0 ? spec.Msg : null;
+            awaitSend = spec.SendNow;
+            capri.Say("Do kogo mam napisać?");
+            return Yes("czekam na imię");
+        }
+        if (spec.Msg.Length == 0)
+        {
+            awaiting = "body";
+            awaitUntil = now + AskLife;
+            awaitWho = who;
+            awaitShown = shown;
+            awaitApp = spec.App;
+            awaitSend = spec.SendNow;
+            capri.Say("Co mam napisać?");
+            return Yes("czekam na treść dla: " + shown);
+        }
+        string text = Compose(spec.Msg);
+        if (text.Length == 0)
+        {
+            capri.Say("Nie usłyszałam treści.");
+            return Yes("pusta treść");
+        }
+        QueueMessage(who, shown, spec.App, text, spec.SendNow, now);
+        return Yes("wiadomość do " + shown + (spec.SendNow ? " (od razu)" : ""));
+    }
+
+    void QueueMessage(string who, string shown, AppInfo app, string text, bool sendNow, DateTime now)
+    {
         lastWho = who;
         lastShown = shown;
-        Queue(new Job { Kind = "message", Text = text, Who = who, Shown = shown, App = app });
-        capri.Say("Już piszę.");
-        return true;
+        lastMessageAt = now;
+        messagesInFlight++;
+        awaiting = null;
+        Queue(new Job { Kind = "message", Text = text, Who = who, Shown = shown, App = app, SendNow = sendNow });
+        capri.Say("Piszę.");
     }
 
     bool TrySearch(string bare)
@@ -553,22 +902,22 @@ public class PolishDictation : ICapriMod
         }
         else
         {
-            Match googled = Googled.Match(bare);
-            if (googled.Success) query = googled.Groups["q"].Value;
+            Match plain = SearchPlain.Match(bare);
+            if (plain.Success) query = plain.Groups["q"].Value;
         }
         if (query == null) return false;
         query = query.Trim();
         if (query.Length == 0) return false;
         Queue(new Job { Kind = "open", Text = SearchUrl(site, query) });
         capri.Say("Szukam: " + query);
-        return true;
+        return Yes("szukanie w sieci: " + query);
     }
 
     static string SearchUrl(string site, string query)
     {
         string s = (site ?? "").ToLowerInvariant();
         string q = Uri.EscapeDataString(query.Trim());
-        if (s.Contains("youtube")) return "https://www.youtube.com/results?search_query=" + q;
+        if (s.Contains("youtube") || s.EndsWith("yt")) return "https://www.youtube.com/results?search_query=" + q;
         if (s.Contains("map")) return "https://www.google.com/maps/search/?api=1&query=" + q;
         if (s.Contains("wiki")) return "https://pl.wikipedia.org/w/index.php?search=" + q;
         return "https://www.google.com/search?q=" + q;
@@ -598,10 +947,15 @@ public class PolishDictation : ICapriMod
         return text.Trim(' ');
     }
 
+    static string Unquote(string text)
+    {
+        return Regex.Replace(text ?? "", @"[„”“""«»]", "").Trim();
+    }
+
     // Wiadomość do osoby: jedna linia, wielka litera na początku, kropka na końcu.
     static string Compose(string raw)
     {
-        string text = Format(raw).Replace("\r", " ").Replace("\n", " ").Trim();
+        string text = Unquote(Format(raw)).Replace("\r", " ").Replace("\n", " ").Trim();
         if (text.Length == 0) return text;
         if (text.Length > 1000) text = text.Substring(0, 1000);
         text = char.ToUpperInvariant(text[0]) + text.Substring(1);
@@ -627,28 +981,38 @@ public class PolishDictation : ICapriMod
         return trimmed;
     }
 
+    static string StemAll(string phrase)
+    {
+        string[] parts = (phrase ?? "").Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++) parts[i] = Stem(parts[i]);
+        return string.Join(" ", parts);
+    }
+
     // Co wpisać w wyszukiwarkę: najpierw tabela Contacts, potem temat imienia (każdego słowa).
     // null = nie wolno, bo OnlyContacts jest włączone, a tej osoby nie ma w tabeli.
     static string Search(string spoken)
     {
         string key = (spoken ?? "").Trim().ToLowerInvariant();
+        string stemmed = StemAll(key);
         foreach (string[] pair in Contacts)
         {
             if (pair.Length != 2) continue;
-            string k = pair[0].ToLowerInvariant();
-            if (k == key || Stem(k) == Stem(key)) return pair[1];
+            foreach (string variant in pair[0].Split('|'))
+            {
+                string v = variant.Trim().ToLowerInvariant();
+                if (v.Length > 0 && (v == key || StemAll(v) == stemmed)) return pair[1];
+            }
         }
         if (OnlyContacts) return null;
-        string[] parts = (spoken ?? "").Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < parts.Length; i++) parts[i] = Stem(parts[i]);
-        return string.Join(" ", parts);
+        return StemAll(spoken);
     }
 
-    // Ile znaków skasować z końca tego, co wpisałam: ostatnie słowo, ostatnie zdanie albo wszystko.
-    static int Erase(string typed, string what)
+    // Ile znaków skasować z końca tego, co wpisałam: ostatnie słowo, zdanie, kawałek albo wszystko.
+    static int Erase(string typed, string what, int chunk)
     {
         if (string.IsNullOrEmpty(typed)) return 0;
         if (what == "all") return typed.Length;
+        if (what == "chunk" && chunk > 0) return Math.Min(chunk, typed.Length);
         int end = typed.Length;
         while (end > 0 && (typed[end - 1] == ' ' || typed[end - 1] == '\n')) end--;
         if (what == "word")
@@ -668,6 +1032,15 @@ public class PolishDictation : ICapriMod
         return typed.Length - keep;
     }
 
+    // "napisz coś" jednym zdaniem albo po pauzie. Krótkie hasła dostają bez kropki ("karol wiśniewski").
+    void TypeOnce(string raw)
+    {
+        string text = Unquote(raw).Trim();
+        if (text.EndsWith(".") && !text.EndsWith("...") && text.IndexOfAny(new char[] { '.', '!', '?' }) == text.Length - 1 && text.Split(' ').Length <= 4)
+            text = text.Substring(0, text.Length - 1);
+        Enqueue(text, false);
+    }
+
     void Queue(Job job)
     {
         lock (gate)
@@ -685,6 +1058,26 @@ public class PolishDictation : ICapriMod
         if (continuing && !text.EndsWith("\n")) text += " ";
         lock (gate) lastTyped = DateTime.UtcNow;
         Queue(new Job { Kind = "type", Text = text });
+    }
+
+    void Note(string line)
+    {
+        if (!DebugLog || capri == null) return;
+        try
+        {
+            lock (logGate)
+            {
+                string path = Path.Combine(capri.Folder, "heard.log");
+                File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss") + "  " + line.Replace("\r", " ").Replace("\n", " ") + Environment.NewLine);
+                if (++logWrites % 50 != 0) return;
+                string[] lines = File.ReadAllLines(path);
+                if (lines.Length <= 300) return;
+                string[] kept = new string[300];
+                Array.Copy(lines, lines.Length - 300, kept, 0, 300);
+                File.WriteAllLines(path, kept);
+            }
+        }
+        catch (Exception) { }
     }
 
     void Work()
@@ -709,9 +1102,14 @@ public class PolishDictation : ICapriMod
                     case "erase": EraseTyped(job.Text); break;
                     case "combo": Press(job.Mods, job.KeyCode); break;
                     case "open": Open(job.Text); break;
+                    case "log": ShowLog(); break;
                 }
             }
-            catch (Exception error) { capri.Log("Błąd: " + error.Message); }
+            catch (Exception error)
+            {
+                Note("BŁĄD przy " + job.Kind + ": " + error.Message);
+                capri.Log("Błąd: " + error.Message);
+            }
         }
     }
 
@@ -815,10 +1213,24 @@ public class PolishDictation : ICapriMod
         return events.Count == 0 || Fire(events);
     }
 
+    // Zapamiętuje, co wpisałam i gdzie, żeby dało się to potem skasować głosem.
+    void Remember(string text, IntPtr window)
+    {
+        lock (gate)
+        {
+            tail += text;
+            if (tail.Length > TailLongest) tail = tail.Substring(tail.Length - TailLongest);
+            lastChunk = text.Length;
+            tailWindow = window;
+            lastTyped = DateTime.UtcNow;
+        }
+    }
+
     void Type(string text)
     {
         if (OwnWindow())
         {
+            Note("pomijam wpisywanie: na wierzchu jest okno Capri");
             Remind("Kliknij najpierw tam, gdzie mam pisać.");
             return;
         }
@@ -827,13 +1239,7 @@ public class PolishDictation : ICapriMod
             Remind("Nie mogę pisać w tym oknie. Może działa jako administrator.");
             return;
         }
-        lock (gate)
-        {
-            tail += text;
-            if (tail.Length > TailLongest) tail = tail.Substring(tail.Length - TailLongest);
-            tailWindow = GetForegroundWindow();
-            lastTyped = DateTime.UtcNow;
-        }
+        Remember(text, GetForegroundWindow());
     }
 
     void EraseTyped(string what)
@@ -847,8 +1253,10 @@ public class PolishDictation : ICapriMod
         lock (gate)
         {
             if (GetForegroundWindow() != tailWindow) tail = "";
-            count = Erase(tail, what);
+            count = Erase(tail, what, lastChunk);
+            if (count == 0 && what == "chunk") count = Erase(tail, "sentence", 0);
             tail = tail.Substring(0, tail.Length - count);
+            lastChunk = 0;
         }
         if (count == 0)
         {
@@ -862,6 +1270,7 @@ public class PolishDictation : ICapriMod
     {
         if (OwnWindow())
         {
+            Note("pomijam skrót: na wierzchu jest okno Capri");
             Remind("Kliknij najpierw w okno, w którym mam to zrobić.");
             return;
         }
@@ -874,6 +1283,17 @@ public class PolishDictation : ICapriMod
         ProcessStartInfo info = new ProcessStartInfo(url);
         info.UseShellExecute = true;
         Process.Start(info);
+    }
+
+    void ShowLog()
+    {
+        string path = Path.Combine(capri.Folder, "heard.log");
+        if (!File.Exists(path))
+        {
+            capri.Say("Nie mam jeszcze dziennika.");
+            return;
+        }
+        Process.Start("notepad.exe", "\"" + path + "\"");
     }
 
     static IntPtr FindApp(AppInfo app)
@@ -902,6 +1322,15 @@ public class PolishDictation : ICapriMod
 
     void Message(Job job)
     {
+        try { WriteMessage(job); }
+        finally
+        {
+            lock (gate) { if (messagesInFlight > 0) messagesInFlight--; }
+        }
+    }
+
+    void WriteMessage(Job job)
+    {
         AppInfo app = job.App ?? AppFor(null);
         IntPtr window = FindApp(app);
         if (window == IntPtr.Zero)
@@ -915,21 +1344,23 @@ public class PolishDictation : ICapriMod
             return;
         }
         bool ok = Combo(new ushort[] { app.Mod }, app.KeyCode);
-        Thread.Sleep(600);
+        Thread.Sleep(700);
         ok = ok && TypeRaw(app.Prefix + job.Who);
-        Thread.Sleep(1000);
+        Thread.Sleep(1500);
         ok = ok && Tap(VkReturn);
-        Thread.Sleep(900);
+        Thread.Sleep(1000);
         ok = ok && TypeRaw(job.Text);
         if (!ok)
         {
             capri.Say("Nie mogę pisać w oknie " + app.Name + ". Może działa jako administrator.");
             return;
         }
-        if (AutoSend)
+        Remember(job.Text, window);
+        if (AutoSend || job.SendNow)
         {
             Tap(VkReturn);
-            capri.Say("Wysłałam do " + job.Shown + " (" + app.Name + "): " + job.Text);
+            lock (gate) { tail = ""; lastChunk = 0; }
+            capri.Say("Wysłane do " + job.Shown + ".");
             return;
         }
         lock (gate)
@@ -937,7 +1368,7 @@ public class PolishDictation : ICapriMod
             draft = window;
             draftAt = DateTime.UtcNow;
         }
-        capri.Say("Wpisałam do " + job.Shown + " (" + app.Name + "): " + job.Text + " Sprawdź, czy to właściwa osoba, i powiedz: wyślij. Albo: anuluj.");
+        capri.Say("Do " + job.Shown + ": " + job.Text + " Wysłać?");
     }
 
     void SendDraft()
@@ -960,7 +1391,11 @@ public class PolishDictation : ICapriMod
             capri.Say("Okno z wiadomością nie jest już na wierzchu, więc nie wysyłam. Wpisz ją jeszcze raz.");
             return;
         }
-        if (Tap(VkReturn)) capri.Say("Wysłane.");
+        if (Tap(VkReturn))
+        {
+            lock (gate) { tail = ""; lastChunk = 0; }
+            capri.Say("Wysłane.");
+        }
         else capri.Say("Nie udało się wysłać.");
     }
 
@@ -975,8 +1410,9 @@ public class PolishDictation : ICapriMod
         if (target == IntPtr.Zero) return;
         if (GetForegroundWindow() == target)
         {
-            Combo(new ushort[] { VkControl }, 0x41);
+            Combo(new ushort[] { VkControl }, VkA);
             Tap(VkBack);
+            lock (gate) { tail = ""; lastChunk = 0; }
         }
         capri.Say("Anulowane, nic nie wysłałam.");
     }
